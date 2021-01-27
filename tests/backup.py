@@ -212,9 +212,7 @@ class BackupTest(ProbackupTest, unittest.TestCase):
         except ProbackupException as e:
             self.assertTrue(
                 "INFO: Validate backups of the instance 'node'" in e.message and
-                "WARNING: Backup file".format(
-                    file) in e.message and
-                "is not found".format(file) in e.message and
+                "WARNING: Backup file" in e.message and "is not found" in e.message and
                 "WARNING: Backup {0} data files are corrupted".format(
                     backup_id) in e.message and
                 "WARNING: Some backups are not valid" in e.message,
@@ -975,7 +973,7 @@ class BackupTest(ProbackupTest, unittest.TestCase):
         self.add_instance(backup_dir, 'node', node)
         node.slow_start()
 
-        self.backup_node(
+        backup_id = self.backup_node(
             backup_dir, 'node', node, backup_type="full",
             options=["-j", "4", "--stream"])
 
@@ -1030,9 +1028,10 @@ class BackupTest(ProbackupTest, unittest.TestCase):
                 "\n Output: {0} \n CMD: {1}".format(
                     repr(self.output), self.cmd))
         except ProbackupException as e:
-            self.assertTrue(
-                'ERROR: --tablespace-mapping option' in e.message and
-                'have an entry in tablespace_map file' in e.message,
+            self.assertIn(
+                'ERROR: Backup {0} has no tablespaceses, '
+                'nothing to remap'.format(backup_id),
+                e.message,
                 '\n Unexpected Error Message: {0}\n CMD: {1}'.format(
                     repr(e.message), self.cmd))
 
@@ -1146,7 +1145,7 @@ class BackupTest(ProbackupTest, unittest.TestCase):
         tblspace1_old_path = self.get_tblspace_path(node, 'tblspace1_old')
         tblspace_new_path = self.get_tblspace_path(node, 'tblspace_new')
 
-        self.backup_node(
+        backup_id = self.backup_node(
             backup_dir, 'node', node, backup_type="full",
             options=["-j", "4", "--stream"])
 
@@ -1168,9 +1167,9 @@ class BackupTest(ProbackupTest, unittest.TestCase):
                 "\n Output: {0} \n CMD: {1}".format(
                     repr(self.output), self.cmd))
         except ProbackupException as e:
-            self.assertTrue(
-                'ERROR: --tablespace-mapping option' in e.message and
-                'have an entry in tablespace_map file' in e.message,
+            self.assertIn(
+                'ERROR: Backup {0} has no tablespaceses, '
+                'nothing to remap'.format(backup_id), e.message,
                 '\n Unexpected Error Message: {0}\n CMD: {1}'.format(
                     repr(e.message), self.cmd))
 
@@ -1970,7 +1969,7 @@ class BackupTest(ProbackupTest, unittest.TestCase):
                 '\n Unexpected Error Message: {0}\n CMD: {1}'.format(
                     repr(e.message), self.cmd))
 
-        os.chmod(full_path, 700)
+        os.rmdir(full_path)
 
         # Clean after yourself
         self.del_test_dir(module_name, fname, [node])
@@ -2861,6 +2860,100 @@ class BackupTest(ProbackupTest, unittest.TestCase):
         # Clean after yourself
         self.del_test_dir(module_name, fname)
 
+    # @unittest.skip("skip")
+    def test_issue_289(self):
+        """
+        https://github.com/postgrespro/pg_probackup/issues/289
+        """
+        fname = self.id().split('.')[3]
+        node = self.make_simple_node(
+            base_dir=os.path.join(module_name, fname, 'node'),
+            initdb_params=['--data-checksums'])
+
+        backup_dir = os.path.join(self.tmp_path, module_name, fname, 'backup')
+        self.init_pb(backup_dir)
+        self.add_instance(backup_dir, 'node', node)
+
+        node.slow_start()
+
+        try:
+            self.backup_node(
+                backup_dir, 'node', node,
+                backup_type='page', options=['--archive-timeout=10s'])
+            # we should die here because exception is what we expect to happen
+            self.assertEqual(
+                1, 0,
+                "Expecting Error because full backup is missing"
+                "\n Output: {0} \n CMD: {1}".format(
+                    repr(self.output), self.cmd))
+        except ProbackupException as e:
+            self.assertNotIn(
+                "INFO: Wait for WAL segment",
+                e.message,
+                "\n Unexpected Error Message: {0}\n CMD: {1}".format(
+                    repr(e.message), self.cmd))
+
+            self.assertIn(
+                "ERROR: Create new full backup before an incremental one",
+                e.message,
+                "\n Unexpected Error Message: {0}\n CMD: {1}".format(
+                    repr(e.message), self.cmd))
+
+        self.assertEqual(
+            self.show_pb(backup_dir, 'node')[0]['status'], "ERROR")
+
+        # Clean after yourself
+        self.del_test_dir(module_name, fname)
+
+    # @unittest.skip("skip")
+    def test_issue_290(self):
+        """
+        https://github.com/postgrespro/pg_probackup/issues/290
+        """
+        fname = self.id().split('.')[3]
+        node = self.make_simple_node(
+            base_dir=os.path.join(module_name, fname, 'node'),
+            initdb_params=['--data-checksums'])
+
+        backup_dir = os.path.join(self.tmp_path, module_name, fname, 'backup')
+        self.init_pb(backup_dir)
+        self.add_instance(backup_dir, 'node', node)
+        self.set_archiving(backup_dir, 'node', node)
+
+        os.rmdir(
+            os.path.join(backup_dir, "wal", "node"))
+
+        node.slow_start()
+
+        try:
+            self.backup_node(
+                backup_dir, 'node', node,
+                options=['--archive-timeout=10s'])
+            # we should die here because exception is what we expect to happen
+            self.assertEqual(
+                1, 0,
+                "Expecting Error because full backup is missing"
+                "\n Output: {0} \n CMD: {1}".format(
+                    repr(self.output), self.cmd))
+        except ProbackupException as e:
+            self.assertNotIn(
+                "INFO: Wait for WAL segment",
+                e.message,
+                "\n Unexpected Error Message: {0}\n CMD: {1}".format(
+                    repr(e.message), self.cmd))
+
+            self.assertIn(
+                "WAL archive directory is not accessible",
+                e.message,
+                "\n Unexpected Error Message: {0}\n CMD: {1}".format(
+                    repr(e.message), self.cmd))
+
+        self.assertEqual(
+            self.show_pb(backup_dir, 'node')[0]['status'], "ERROR")
+
+        # Clean after yourself
+        self.del_test_dir(module_name, fname)
+
     @unittest.skip("skip")
     def test_issue_203(self):
         """
@@ -2898,6 +2991,39 @@ class BackupTest(ProbackupTest, unittest.TestCase):
 
         pgdata_restored = self.pgdata_content(node_restored.data_dir)
         self.compare_pgdata(pgdata, pgdata_restored)
+
+        # Clean after yourself
+        self.del_test_dir(module_name, fname)
+
+    # @unittest.skip("skip")
+    def test_issue_231(self):
+        """
+        https://github.com/postgrespro/pg_probackup/issues/231
+        """
+        fname = self.id().split('.')[3]
+        backup_dir = os.path.join(self.tmp_path, module_name, fname, 'backup')
+        node = self.make_simple_node(
+            base_dir=os.path.join(module_name, fname, 'node'),
+            set_replication=True,
+            initdb_params=['--data-checksums'],
+            pg_options={'autovacuum': 'off'})
+
+        self.init_pb(backup_dir)
+        self.add_instance(backup_dir, 'node', node)
+        node.slow_start()
+
+        datadir = os.path.join(node.data_dir, '123')
+
+        try:
+            self.backup_node(
+                backup_dir, 'node', node, data_dir='{0}'.format(datadir))
+        except:
+            pass
+
+        out = self.backup_node(backup_dir, 'node', node, options=['--stream'], return_id=False)
+
+        # it is a bit racy
+        self.assertIn("WARNING: Cannot create directory", out)
 
         # Clean after yourself
         self.del_test_dir(module_name, fname)
